@@ -1,0 +1,67 @@
+name: Ship gate
+description: The 14 gates between "it works on my machine" and "it is in production"
+title: "[ship] "
+labels: ["type:ship-gate"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Open **one** of these per product release. Manager Saheb reports the score to the founder
+        every day at noon until it reads 14/14. A product is not "done" — it is a number.
+
+  - type: input
+    id: product
+    attributes:
+      label: Product slug
+      description: Must match the `slug` in config.json (also add the `proj:<slug>` label).
+    validations:
+      required: true
+
+  - type: textarea
+    id: gates
+    attributes:
+      label: The gates
+      value: |
+        ### Correctness
+        - [ ] All acceptance criteria on the release milestone are checked
+        - [ ] Happy path manually walked end-to-end on staging by someone who didn't build it
+        - [ ] The three most likely failure paths tested (bad input, no network, expired auth)
+
+        ### Production readiness
+        - [ ] Environment variables documented and set in the production project
+        - [ ] Error tracking live and verified with a deliberate test error (Sentry free tier)
+        - [ ] Structured logging on the server routes, with request ids
+        - [ ] Rate limiting / abuse protection on public write endpoints
+        - [ ] Auth boundaries verified: logged-out user cannot reach any private route or API
+
+        ### Data
+        - [ ] Migrations run forward AND backward on a copy of prod data
+        - [ ] A restorable backup exists and a restore has actually been tested once
+
+        ### Release mechanics
+        - [ ] Custom domain + HTTPS + www redirect working
+        - [ ] Rollback plan written here, and the previous deployment is one click away
+        - [ ] Analytics event for the single action that defines success fires correctly
+
+        ### Users
+        - [ ] Someone outside the team completed the core flow unaided while you watched
+        - [ ] Privacy policy / terms pages exist and support email is monitored
+    validations:
+      required: true
+
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Rollback plan
+      description: Write it now, calmly, rather than at 2am.
+      placeholder: "Revert deployment in Vercel dashboard → previous alias. DB: migration 0042 is reversible via `npm run db:down`."
+    validations:
+      required: true
+
+  - type: input
+    id: date
+    attributes:
+      label: Committed ship date
+      description: A date makes it real. Move it deliberately, never silently.
+    validations:
+      required: true
