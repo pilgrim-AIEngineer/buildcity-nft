@@ -1,0 +1,80 @@
+name: PR quality — size
+
+# Copy this file into a product repo's .github/workflows/. Big PRs are where review quality
+# goes to die: reviewers skim, bugs hide in the skim, and the fix lands three weeks later as
+# an incident. This checks changed-line count only — it has no opinion on style or correctness,
+# just on whether a human can actually hold the diff in their head.
+#
+# Tune the two knobs below per repo. Nothing else in this file should need to change.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+env:
+  MAX_LINES: 400     # additions + deletions before we ask for a split
+  ON_BREACH: neutral # 'neutral' (informational, doesn't block merge) or 'failed' (blocks merge)
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  size:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Measure the diff and report
+        id: measure
+        continue-on-error: ${{ env.ON_BREACH == 'neutral' }}
+        uses: actions/github-script@v7
+        env:
+          MAX_LINES: ${{ env.MAX_LINES }}
+        with:
+          script: |
+            const MARKER = '<!-- pr-quality:size -->';
+            const maxLines = Number(process.env.MAX_LINES || 400);
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request.number;
+
+            // Lockfiles and generated output are noise for "can a human review this" —
+            // they inflate the line count without adding anything to hold in your head.
+            const LOCKFILES = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|composer\.lock|Gemfile\.lock|Cargo\.lock|go\.sum|poetry\.lock|Pipfile\.lock)$/;
+            const GENERATED = /(^|\/)(dist|build|out|coverage|vendor|node_modules|\.next|\.nuxt|generated)\//;
+
+            let files = [];
+            for (let page = 1; ; page++) {
+              const res = await github.rest.pulls.listFiles({ owner, repo, pull_number: pr, per_page: 100, page });
+              files.push(...res.data);
+              if (res.data.length < 100) break;
+            }
+
+            const counted = files.filter(f => !LOCKFILES.test(f.filename) && !GENERATED.test(f.filename));
+            const excluded = files.length - counted.length;
+            const changed = counted.reduce((sum, f) => sum + f.additions + f.deletions, 0);
+            const over = changed > maxLines;
+
+            const body = [
+              MARKER,
+              over
+                ? `### 📏 This PR changes **${changed}** lines (limit: ${maxLines})`
+                : `### 📏 PR size: ${changed} lines (limit: ${maxLines}) — OK`,
+              over
+                ? `A diff this size is hard to review carefully, so bugs slip through in the skim. Please split it into smaller, independently-reviewable PRs (e.g. by file/feature, or refactor-then-behavior).`
+                : ``,
+              excluded ? `_(${excluded} lockfile/generated file(s) excluded from the count.)_` : ``,
+            ].filter(Boolean).join('\n\n');
+
+            const comments = await github.rest.issues.listComments({ owner, repo, issue_number: pr, per_page: 100 });
+            const existing = comments.data.find(c => c.body && c.body.includes(MARKER));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else if (over) {
+              // Only post a fresh comment when there's something to say; don't add noise to a
+              // small, clean PR just to say "OK".
+              await github.rest.issues.createComment({ owner, repo, issue_number: pr, body });
+            }
+
+            if (over) {
+              core.setFailed(`PR changes ${changed} lines, over the ${maxLines}-line limit — see the sticky comment.`);
+            }
