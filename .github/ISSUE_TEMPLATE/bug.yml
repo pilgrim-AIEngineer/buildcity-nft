@@ -1,0 +1,37 @@
+name: Bug
+description: Something is broken
+title: "[bug] "
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+      value: |
+        **Expected:**
+        **Actual:**
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: If you can't reproduce it, say so — that itself is the first task.
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - "sev1 — production down or data at risk (breaks quiet hours)"
+        - "sev2 — core flow broken for some users"
+        - "sev3 — annoying, has a workaround"
+      default: 2
+    validations:
+      required: true
+  - type: input
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Error id, log link, screenshot, or recording.
