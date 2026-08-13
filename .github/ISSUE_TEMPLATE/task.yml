@@ -1,0 +1,58 @@
+name: Task
+description: A unit of work with one owner and a definition of done
+title: "[task] "
+labels: ["type:task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Rule 1 of the playbook: no issue, no work.** If it isn't here, it doesn't exist.
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: What is true after this is done, from the user's point of view? Not the implementation.
+      placeholder: A failed Stripe webhook retries automatically instead of silently dropping the payment.
+    validations:
+      required: true
+
+  - type: textarea
+    id: ac
+    attributes:
+      label: Acceptance criteria
+      description: The checkboxes that make "done" a fact rather than an opinion. Write these BEFORE starting.
+      value: |
+        - [ ]
+        - [ ] covered by a test
+        - [ ] verified on staging
+    validations:
+      required: true
+
+  - type: dropdown
+    id: level
+    attributes:
+      label: Delegation level
+      description: How much rope does the owner have? Say it out loud so they know.
+      options:
+        - "L1 — do exactly this (approach specified)"
+        - "L2 — solve this problem (approach is yours)"
+        - "L3 — own this outcome (scope is yours too)"
+      default: 1
+    validations:
+      required: true
+
+  - type: input
+    id: estimate
+    attributes:
+      label: Estimate
+      description: Your honest guess in days. Being wrong is fine — not writing one is not.
+      placeholder: "1.5"
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Context / links
+      description: Anything that saves the owner an hour of hunting.
