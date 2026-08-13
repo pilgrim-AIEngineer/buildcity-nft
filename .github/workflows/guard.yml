@@ -1,0 +1,107 @@
+# COPY THIS INTO EACH PRODUCT REPO as .github/workflows/guard.yml
+#
+# The security and quality gate. Everything here is free forever: no Advanced Security,
+# no Snyk seat, no SonarCloud plan. It runs on every push and every PR and takes ~40s.
+#
+# It needs one secret in the product repo:
+#   MS_GH_TOKEN  — read access to the manager-saheb control repo (for the shared checks)
+# and, only if you want the AI review step:
+#   CLAUDE_CODE_OAUTH_TOKEN — your Claude Pro token (`claude setup-token`)
+
+name: Guard
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # guard needs the merge base to diff against
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      # ── 1. Secret scanning across the whole history of this branch ──────────
+      # gitleaks' own Action needs a licence for organisations; the binary does not.
+      # This is the same scanner, run directly, for free.
+      - name: gitleaks — secrets in history
+        run: |
+          VER=8.21.2
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --redact --no-banner --exit-code 1 \
+            --report-format sarif --report-path /tmp/gitleaks.sarif \
+          || { echo "::error::A credential was found in this branch's history. Rotate the key FIRST, then rewrite the history. A key that reached GitHub must be considered public."; exit 1; }
+
+      # ── 2. The project's own rules ──────────────────────────────────────────
+      - name: Fetch shared checks
+        uses: actions/checkout@v4
+        with:
+          repository: pilgrim-AIEngineer/manager-saheb
+          path: .manager-saheb
+          token: ${{ secrets.MS_GH_TOKEN }}
+
+      - name: guard — patterns that actually bite small teams
+        id: guard
+        run: |
+          BASE="origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"
+          git fetch origin --quiet
+          node .manager-saheb/agent/guard.mjs --base "$BASE" | tee /tmp/guard.txt
+        continue-on-error: false
+
+      # ── 3. Dependency vulnerabilities ───────────────────────────────────────
+      # Fails only on high/critical. Moderate findings in dev dependencies are noise
+      # that trains people to ignore the whole check.
+      - name: npm audit
+        if: hashFiles('package-lock.json') != ''
+        run: npm audit --audit-level=high --omit=dev
+
+      # ── 4. AI review of the diff only — one call, capped ────────────────────
+      # Deliberately narrow. A reviewer that comments on style gets muted in a week,
+      # and a muted reviewer is strictly worse than no reviewer.
+      - name: Claude — first-pass review
+        if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Review ONLY the diff of this pull request. Run:
+              git diff origin/${{ github.event.pull_request.base.ref }}...HEAD
+            If that diff is longer than 1500 lines, comment only
+            "Diff too large for review — split this PR" and stop.
+
+            Look for exactly four things and say nothing else:
+              1. An auth or permission boundary that is missing or wrong.
+              2. An error path that is unhandled, swallowed, or returns success.
+              3. A query inside a loop, or an N+1 against the database.
+              4. A secret, token, or personal data written to a log or a response.
+
+            For each finding: the file and line, one sentence on what breaks, and the fix.
+            If you find none of these four things, comment exactly "No blocking issues found."
+            Do not comment on style, naming, formatting, test coverage, or architecture.
+            Do not praise. Do not summarise the PR.
+
+            Post your review as a single PR comment using `gh pr comment`.
+          claude_args: '--allowedTools "Bash(git diff:*),Bash(gh pr comment:*),Read" --max-turns 8'
+
+      - name: Explain a failure in plain language
+        if: failure()
+        run: |
+          echo "### Guard failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Nothing here is about code quality opinions. Each finding is something that" >> $GITHUB_STEP_SUMMARY
+          echo "costs real money or real trust if it reaches production. The output above says" >> $GITHUB_STEP_SUMMARY
+          echo "what to do for each one." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "If you are certain a finding is wrong, add a \`guard-ignore\` comment on that line." >> $GITHUB_STEP_SUMMARY
+          echo "It will show up in review, which is exactly what should happen." >> $GITHUB_STEP_SUMMARY
