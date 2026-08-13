@@ -1,0 +1,94 @@
+name: AI PR review — first pass
+
+# Copy this file into a product repo's .github/workflows/. One Claude call per PR, and it
+# never sees your codebase — only the diff, capped at MAX_DIFF_LINES. It looks for exactly
+# four failure modes and says nothing else: this is a first-pass net for the things a tired
+# reviewer skims past, not a style bot. Human review still owns everything else.
+#
+# Uses your Claude Pro/Max subscription via OAuth (no per-call API bill) — same pattern as
+# weekly-review.yml in the control repo: bounded input, one file out, nothing else touched.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+env:
+  MAX_DIFF_LINES: 1500
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      # No checkout: the workspace stays empty except for the diff we write ourselves, so
+      # "give Claude Read" below still can't reach the codebase — there's nothing here to read.
+      - name: Fetch the PR diff, capped at MAX_DIFF_LINES
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAX_DIFF_LINES: ${{ env.MAX_DIFF_LINES }}
+        run: |
+          mkdir -p out
+          gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" \
+            -H "Accept: application/vnd.github.v3.diff" > raw.diff
+
+          node --input-type=module -e "
+            import { readFileSync, writeFileSync } from 'node:fs';
+            const max = Number(process.env.MAX_DIFF_LINES || 1500);
+            const lines = readFileSync('raw.diff', 'utf8').split(/\r?\n/);
+            const truncated = lines.length > max;
+            const body = lines.slice(0, max).join('\n') + (truncated ? '\n\n[... diff truncated at ' + max + ' lines ...]' : '');
+            writeFileSync('pr.diff', body);
+            console.log('diff lines kept:', Math.min(lines.length, max), '/ truncated:', truncated);
+          "
+
+      - name: Claude — first-pass review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Read only: pr.diff — a unified diff, possibly truncated. Write out/review.md.
+            Touch nothing else; you have no access to the rest of the repository and must not
+            ask for it.
+
+            Flag EXACTLY these four things, and say NOTHING else — no summary of what the PR
+            does, no style/formatting/naming comments, no "consider also":
+
+            1. Auth boundary holes — missing or weak authn/authz on a new or changed path.
+            2. Unhandled error paths — a call that can reject/throw with no catch and no error
+               response.
+            3. N+1 queries — a loop issuing one DB/API call per iteration where a single
+               batched call would do.
+            4. Secrets or PII in logs — credentials, tokens, or personal data passed to a
+               logger or printed.
+
+            For each finding: file, line (from the diff), one sentence on the fix. If none of
+            the four apply, write out/review.md containing exactly: "No issues in these four
+            checks."
+          claude_args: '--allowedTools "Read,Write" --max-turns 4'
+
+      - name: Post as a single PR comment (update, don't stack)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const MARKER = '<!-- ai-review:first-pass -->';
+            const body = fs.existsSync('out/review.md') ? fs.readFileSync('out/review.md', 'utf8').trim() : '';
+            if (!body) return;
+
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request.number;
+            const full = `${MARKER}\n### 🤖 AI first-pass review\n\n${body}`;
+
+            const comments = await github.rest.issues.listComments({ owner, repo, issue_number: pr, per_page: 100 });
+            const existing = comments.data.find(c => c.body && c.body.includes(MARKER));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: full });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: pr, body: full });
+            }
